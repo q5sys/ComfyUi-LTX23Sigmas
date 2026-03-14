@@ -9,6 +9,7 @@ class LTX23Sigmas:
             "required": {
                 "duration": ("INT", {"default": 121, "min": 1, "max": 10000, "step": 1, "display": "number"}),
                 "prompt": ("STRING", {"default": "", "display": "string", "multiline": True}),
+                "steps": ("INT", {"default": 4, "min": 4, "max": 50, "step": 1, "display": "number"}),
             }
         }
 
@@ -47,20 +48,51 @@ class LTX23Sigmas:
         ]
         return self.I(d, points)
 
-    def calculate_sigmas(self, duration, prompt=""):
+    def _interp_curve(self, x, xp, yp):
+        """Linear interpolation along a curve defined by (xp, yp) pairs."""
+        if x <= xp[0]:
+            return yp[0]
+        if x >= xp[-1]:
+            return yp[-1]
+        for i in range(1, len(xp)):
+            if x <= xp[i]:
+                t = (x - xp[i-1]) / (xp[i] - xp[i-1])
+                return yp[i-1] + (yp[i] - yp[i-1]) * t
+        return yp[-1]
+
+    def calculate_sigmas(self, duration, prompt="", steps=4):
+        # Calculate the base sigma values (the original 5 control points)
         s1_base = self.S1(duration)
         s2_base = self.S2(duration)
         s3_base = self.S3(duration)
+
+        # Apply prompt-length offset to s1 and s2
         words = len(prompt.split())
-        if words == 0: words = 1
+        if words == 0:
+            words = 1
         frames_per_word = duration / words
         offset = 0.0
         if frames_per_word > 10:
             offset = min(0.0075, (frames_per_word - 10) * 0.0002)
         s1 = max(s1_base, min(1.0, s1_base + offset))
         s2 = max(s2_base, min(1.0, s2_base + (offset * 0.5)))
-        s3 = s3_base # S3 is kept strictly to the base table for stability
-        result = f"{s1:.3f}, {s2:.3f}, {s3:.3f}, 0.445, 0.000"
+        s3 = s3_base  # S3 is kept strictly to the base table for stability
+
+        # The original 5 control points define the curve shape.
+        # They sit at normalized positions [0, 0.25, 0.5, 0.75, 1.0].
+        control_positions = [0.0, 0.25, 0.50, 0.75, 1.0]
+        control_values = [s1, s2, s3, 0.445, 0.000]
+
+        # For the requested number of steps, sample the curve at evenly-spaced points.
+        # N steps → N+1 values (the last is always the 0.000 terminal).
+        num_values = steps + 1
+        sigmas = []
+        for i in range(num_values):
+            pos = i / steps  # normalized 0.0 → 1.0
+            val = self._interp_curve(pos, control_positions, control_values)
+            sigmas.append(f"{val:.3f}")
+
+        result = ", ".join(sigmas)
         return (result,)
 
 NODE_CLASS_MAPPINGS = {"LTX23Sigmas": LTX23Sigmas}
